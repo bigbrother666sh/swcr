@@ -1,0 +1,38 @@
+[project]
+name = "swcr"
+version = "1.0.1"
+description = "计算机软件著作权程序鉴别材料（即源代码）生成器"
+requires-python = ">=3.6"
+authors = [
+    { name = "kenley", email = "kenley2021@gmail.com" }
+]
+license = { text = "MIT" }
+readme = "README.md"
+dependencies = [
+    "click",
+    "scandir",
+    "python-docx",
+    "chardet>=5.0.0",
+    "reportlab>=3.6.0",
+]
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.6",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Python :: Implementation :: PyPy",
+]
+
+[project.urls]
+Homepage = "https://github.com/kenley2021/swcr"
+
+[project.scripts]
+swcr = "swcr.swcr:cli_main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["swcr"]

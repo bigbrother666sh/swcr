@@ -3,7 +3,34 @@ __pycache__
 dist
 build
 *.pyc
-swcr.egg-info
+*.egg-info/
 swcr.spec
 user
 *.docx
+
+# Virtual environments
+.venv/
+.env/
+venv/
+env/
+
+# uv
+.uv-cache/
+
+# Python
+*.pyo
+*.pyd
+*.so
+.Python
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE
+.vscode/
+*.swp
+*.swo
