@@ -16,6 +16,14 @@ from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak
 from reportlab.lib.enums import TA_CENTER
 
+try:
+    from docx import Document
+    from docx.shared import Pt, Inches
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    DOCX_AVAILABLE = True
+except ImportError:
+    DOCX_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_INDIRS = ['.']
@@ -61,16 +69,16 @@ class CodeFinder(object):
         return files
 
 class PDFCodeWriter(object):
-    def __init__(self, font_name='Courier', font_size=9, max_front_pages=30, max_back_pages=30):
+    def __init__(self, font_name='Courier', font_size=7, max_front_pages=30, max_back_pages=30):
         self.font_name = font_name
         self.font_size = font_size
         self.max_front_pages = max_front_pages
         self.max_back_pages = max_back_pages
-        self.line_height = font_size + 2
-        self.margin_left = 50
-        self.margin_right = 50
-        self.margin_top = 80  # 增加顶部边距为页眉留出空间
-        self.margin_bottom = 50
+        self.line_height = font_size + 1
+        self.margin_left = 40
+        self.margin_right = 40
+        self.margin_top = 60
+        self.margin_bottom = 40
         self.page_width = A4[0]
         self.page_height = A4[1]
         self.usable_width = self.page_width - self.margin_left - self.margin_right
@@ -164,6 +172,19 @@ class PDFCodeWriter(object):
 
     def is_comment_line(self, line, comment_chars):
         return any(line.lstrip().startswith(comment_char) for comment_char in comment_chars)
+    
+    def wrap_long_line(self, line, max_chars=90):
+        """将长行拆分为多行"""
+        if len(line) <= max_chars:
+            return [line]
+        
+        wrapped_lines = []
+        while len(line) > max_chars:
+            wrapped_lines.append(line[:max_chars])
+            line = line[max_chars:]
+        if line:
+            wrapped_lines.append(line)
+        return wrapped_lines
 
     def collect_code_lines(self, files, comment_chars, base_dir=None):
         """收集所有代码行"""
@@ -188,7 +209,9 @@ class PDFCodeWriter(object):
                 with codecs.open(file, 'r', encoding, errors='replace') as fp:
                     for line in fp:
                         line = line.rstrip()
-                        self.all_lines.append(line)
+                        # 处理长行换行
+                        wrapped_lines = self.wrap_long_line(line, max_chars=90)
+                        self.all_lines.extend(wrapped_lines)
             except Exception as e:
                 print(f"Error reading file {file}: {e}")
                 self.all_lines.append(f"# Error reading file: {e}")
@@ -204,7 +227,7 @@ class PDFCodeWriter(object):
         return count
 
     def split_lines_for_pages(self, comment_chars):
-        """将代码行分组为页面"""
+        """将代码行分组为页面，确保每页至少50行有效代码"""
         if not self.all_lines:
             return [], []
         
@@ -212,8 +235,9 @@ class PDFCodeWriter(object):
         total_effective_lines = self.count_effective_lines(self.all_lines, comment_chars)
         print(f"Total effective lines: {total_effective_lines}")
         
-        # 计算每页需要的有效行数
-        lines_per_page = 55
+        # 每页需要的有效行数（不计空白行）- 确保最终文档每页显示50行
+        # 考虑到页眉占2行，实际内容区域需要更多行才能填满页面
+        lines_per_page = 52  # 增加到52行以确保页面填满
         
         # 分页逻辑
         front_pages = []
@@ -228,13 +252,14 @@ class PDFCodeWriter(object):
             line = self.all_lines[i]
             current_page_lines.append(line)
             
-            # 检查是否为有效行
-            if not self.is_blank_line(line) and not self.is_comment_line(line, comment_chars):
+            # 检查是否为有效行（非空白行）
+            if not self.is_blank_line(line):
                 current_effective_count += 1
             
             # 如果有效行数达到每页限制，或者到达文件末尾，完成当前页
             if current_effective_count >= lines_per_page or i == len(self.all_lines) - 1:
                 front_pages.append(current_page_lines.copy())
+                print(f"Front page {page_count + 1}: {len(current_page_lines)} total lines, {current_effective_count} effective lines")
                 current_page_lines = []
                 current_effective_count = 0
                 page_count += 1
@@ -256,7 +281,7 @@ class PDFCodeWriter(object):
                 # 从后往前计算
                 for j in range(len(remaining_lines) - 1, -1, -1):
                     line = remaining_lines[j]
-                    if not self.is_blank_line(line) and not self.is_comment_line(line, comment_chars):
+                    if not self.is_blank_line(line):
                         effective_count += 1
                     
                     if effective_count >= target_effective_lines:
@@ -267,39 +292,47 @@ class PDFCodeWriter(object):
                 back_lines = remaining_lines[start_pos:]
                 current_page_lines = []
                 current_effective_count = 0
+                back_page_num = 0
                 
                 for line in back_lines:
                     current_page_lines.append(line)
                     
-                    if not self.is_blank_line(line) and not self.is_comment_line(line, comment_chars):
+                    if not self.is_blank_line(line):
                         current_effective_count += 1
                     
                     if current_effective_count >= lines_per_page:
                         back_pages.append(current_page_lines.copy())
+                        print(f"Back page {back_page_num + 1}: {len(current_page_lines)} total lines, {current_effective_count} effective lines")
                         current_page_lines = []
                         current_effective_count = 0
+                        back_page_num += 1
                 
                 # 添加最后一页（如果有剩余内容）
                 if current_page_lines:
                     back_pages.append(current_page_lines)
+                    print(f"Back page {back_page_num + 1}: {len(current_page_lines)} total lines, {current_effective_count} effective lines")
             else:
                 # 剩余行数不足30页，全部作为后页
                 current_page_lines = []
                 current_effective_count = 0
+                back_page_num = 0
                 
                 for line in remaining_lines:
                     current_page_lines.append(line)
                     
-                    if not self.is_blank_line(line) and not self.is_comment_line(line, comment_chars):
+                    if not self.is_blank_line(line):
                         current_effective_count += 1
                     
                     if current_effective_count >= lines_per_page:
                         back_pages.append(current_page_lines.copy())
+                        print(f"Back page {back_page_num + 1}: {len(current_page_lines)} total lines, {current_effective_count} effective lines")
                         current_page_lines = []
                         current_effective_count = 0
+                        back_page_num += 1
                 
                 if current_page_lines:
                     back_pages.append(current_page_lines)
+                    print(f"Back page {back_page_num + 1}: {len(current_page_lines)} total lines, {current_effective_count} effective lines")
         
         return front_pages, back_pages
 
@@ -364,12 +397,6 @@ class PDFCodeWriter(object):
             if y_position < self.margin_bottom:
                 break
             
-            # 处理过长的行
-            if len(line) * (self.font_size * 0.6) > self.usable_width:
-                # 截断过长的行
-                max_chars = int(self.usable_width / (self.font_size * 0.6))
-                line = line[:max_chars-3] + "..."
-            
             # 检查是否包含中文，选择合适的字体
             if self.contains_chinese(line):
                 self.canvas.setFont(self.chinese_font, self.font_size)
@@ -394,6 +421,286 @@ class PDFCodeWriter(object):
         x_center = (self.page_width - text_width) / 2
         
         self.canvas.drawString(x_center, y_center, text)
+
+class DOCXCodeWriter(object):
+    """DOCX代码文档生成器"""
+    def __init__(self, max_front_pages=30, max_back_pages=30):
+        if not DOCX_AVAILABLE:
+            raise ImportError("python-docx is not installed. Install it with: pip install python-docx")
+        
+        self.max_front_pages = max_front_pages
+        self.max_back_pages = max_back_pages
+        self.all_lines = []
+    
+    @staticmethod
+    def is_blank_line(line):
+        return not bool(line.strip())
+    
+    def is_comment_line(self, line, comment_chars):
+        return any(line.lstrip().startswith(comment_char) for comment_char in comment_chars)
+    
+    def wrap_long_line(self, line, max_chars=90):
+        """将长行拆分为多行"""
+        if len(line) <= max_chars:
+            return [line]
+        
+        wrapped_lines = []
+        while len(line) > max_chars:
+            wrapped_lines.append(line[:max_chars])
+            line = line[max_chars:]
+        if line:
+            wrapped_lines.append(line)
+        return wrapped_lines
+    
+    def check_file_encoding(self, file_path):
+        """检查文件编码"""
+        import chardet
+        with open(file_path, 'rb') as fd:
+            raw_data = fd.read()
+            result = chardet.detect(raw_data)
+            encode_str = result['encoding']
+            confidence = result['confidence']
+            logging.info("input_file: %s, encoding: %s, confidence: %f", file_path, encode_str, confidence)
+            
+            if confidence < 0.7:
+                for encoding in ['utf-8', 'gbk', 'gb2312', 'big5']:
+                    try:
+                        raw_data.decode(encoding)
+                        encode_str = encoding
+                        break
+                    except:
+                        continue
+            
+            return encode_str
+    
+    def collect_code_lines(self, files, comment_chars, base_dir=None):
+        """收集所有代码行"""
+        for file in files:
+            encoding = self.check_file_encoding(file)
+            print(f"Processing: {file}, encoding: {encoding}")
+            
+            if base_dir:
+                try:
+                    relative_path = relpath(file, base_dir)
+                except ValueError:
+                    relative_path = file
+            else:
+                relative_path = file
+            
+            self.all_lines.append(f"# File: {relative_path}")
+            
+            try:
+                with codecs.open(file, 'r', encoding, errors='replace') as fp:
+                    for line in fp:
+                        line = line.rstrip()
+                        wrapped_lines = self.wrap_long_line(line, max_chars=90)
+                        self.all_lines.extend(wrapped_lines)
+            except Exception as e:
+                print(f"Error reading file {file}: {e}")
+                self.all_lines.append(f"# Error reading file: {e}")
+        
+        print(f"Total lines collected: {len(self.all_lines)}")
+    
+    def count_effective_lines(self, lines, comment_chars):
+        """计算有效行数（非空行）"""
+        count = 0
+        for line in lines:
+            if not self.is_blank_line(line):
+                count += 1
+        return count
+    
+    def split_lines_for_pages(self, comment_chars):
+        """将代码行分组为页面，确保每页至少50行有效代码"""
+        if not self.all_lines:
+            return [], []
+        
+        total_effective_lines = self.count_effective_lines(self.all_lines, comment_chars)
+        print(f"Total effective lines: {total_effective_lines}")
+        
+        lines_per_page = 52  # 增加到52行以确保页面填满
+        
+        front_pages = []
+        back_pages = []
+        
+        current_page_lines = []
+        current_effective_count = 0
+        page_count = 0
+        
+        i = 0
+        while i < len(self.all_lines) and page_count < self.max_front_pages:
+            line = self.all_lines[i]
+            current_page_lines.append(line)
+            
+            if not self.is_blank_line(line):
+                current_effective_count += 1
+            
+            if current_effective_count >= lines_per_page or i == len(self.all_lines) - 1:
+                front_pages.append(current_page_lines.copy())
+                print(f"Front page {page_count + 1}: {len(current_page_lines)} total lines, {current_effective_count} effective lines")
+                current_page_lines = []
+                current_effective_count = 0
+                page_count += 1
+            
+            i += 1
+        
+        if i < len(self.all_lines):
+            remaining_lines = self.all_lines[i:]
+            remaining_effective = self.count_effective_lines(remaining_lines, comment_chars)
+            
+            if remaining_effective > self.max_back_pages * lines_per_page:
+                target_effective_lines = self.max_back_pages * lines_per_page
+                start_pos = len(remaining_lines) - 1
+                effective_count = 0
+                
+                for j in range(len(remaining_lines) - 1, -1, -1):
+                    line = remaining_lines[j]
+                    if not self.is_blank_line(line):
+                        effective_count += 1
+                    
+                    if effective_count >= target_effective_lines:
+                        start_pos = j
+                        break
+                
+                back_lines = remaining_lines[start_pos:]
+                current_page_lines = []
+                current_effective_count = 0
+                back_page_num = 0
+                
+                for line in back_lines:
+                    current_page_lines.append(line)
+                    
+                    if not self.is_blank_line(line):
+                        current_effective_count += 1
+                    
+                    if current_effective_count >= lines_per_page:
+                        back_pages.append(current_page_lines.copy())
+                        print(f"Back page {back_page_num + 1}: {len(current_page_lines)} total lines, {current_effective_count} effective lines")
+                        current_page_lines = []
+                        current_effective_count = 0
+                        back_page_num += 1
+                
+                if current_page_lines:
+                    back_pages.append(current_page_lines)
+                    print(f"Back page {back_page_num + 1}: {len(current_page_lines)} total lines, {current_effective_count} effective lines")
+            else:
+                current_page_lines = []
+                current_effective_count = 0
+                back_page_num = 0
+                
+                for line in remaining_lines:
+                    current_page_lines.append(line)
+                    
+                    if not self.is_blank_line(line):
+                        current_effective_count += 1
+                    
+                    if current_effective_count >= lines_per_page:
+                        back_pages.append(current_page_lines.copy())
+                        print(f"Back page {back_page_num + 1}: {len(current_page_lines)} total lines, {current_effective_count} effective lines")
+                        current_page_lines = []
+                        current_effective_count = 0
+                        back_page_num += 1
+                
+                if current_page_lines:
+                    back_pages.append(current_page_lines)
+                    print(f"Back page {back_page_num + 1}: {len(current_page_lines)} total lines, {current_effective_count} effective lines")
+        
+        return front_pages, back_pages
+    
+    def create_docx(self, filename, title, version, front_pages, back_pages):
+        """创建DOCX文件"""
+        doc = Document()
+        
+        # 设置页面边距和行距
+        sections = doc.sections
+        for section in sections:
+            section.top_margin = Inches(0.8)
+            section.bottom_margin = Inches(0.5)
+            section.left_margin = Inches(0.8)
+            section.right_margin = Inches(0.5)
+        
+        # 写入前面的页面
+        for page_num, page_lines in enumerate(front_pages, 1):
+            self.add_page_to_doc(doc, page_lines, page_num, title, version)
+            if page_num < len(front_pages):
+                doc.add_page_break()
+        
+        # 如果有后面的页面，添加省略页
+        if back_pages:
+            doc.add_page_break()
+            self.add_ellipsis_page_to_doc(doc, len(front_pages) + 1, title, version)
+            
+            # 写入后面的页面
+            for page_num, page_lines in enumerate(back_pages, len(front_pages) + 2):
+                doc.add_page_break()
+                self.add_page_to_doc(doc, page_lines, page_num, title, version)
+        
+        doc.save(filename)
+    
+    def add_page_to_doc(self, doc, lines, page_num, title, version):
+        """添加一页内容到文档"""
+        from docx.shared import RGBColor
+        from docx.oxml.ns import qn
+        
+        # 添加页眉
+        header = f"{title} {version}"
+        p = doc.add_paragraph()
+        run = p.add_run(header)
+        run.font.size = Pt(9)
+        
+        # 在同一行添加页码（右对齐）
+        run = p.add_run(f"\t\t\t\t\t\t\t\t\t\t{page_num}")
+        run.font.size = Pt(9)
+        
+        # 设置段落格式：紧凑行距
+        p.paragraph_format.space_before = Pt(0)
+        p.paragraph_format.space_after = Pt(2)
+        p.paragraph_format.line_spacing = 1.0
+        
+        # 添加分隔线
+        p = doc.add_paragraph()
+        run = p.add_run("_" * 95)
+        run.font.size = Pt(8)
+        p.paragraph_format.space_before = Pt(0)
+        p.paragraph_format.space_after = Pt(4)
+        p.paragraph_format.line_spacing = 1.0
+        
+        # 添加代码行 - 使用紧凑格式
+        for line in lines:
+            p = doc.add_paragraph()
+            # 空行也要添加，但用空格占位
+            run = p.add_run(line if line.strip() else ' ')
+            run.font.name = 'Courier New'
+            run.font.size = Pt(8)
+            
+            # 设置紧凑的段落格式
+            p.paragraph_format.space_before = Pt(0)
+            p.paragraph_format.space_after = Pt(0)
+            p.paragraph_format.line_spacing = 1.0
+            
+            # 设置中文字体
+            r = run._element
+            r.rPr.rFonts.set(qn('w:eastAsia'), 'SimSun')
+    
+    def add_ellipsis_page_to_doc(self, doc, page_num, title, version):
+        """添加省略页到文档"""
+        # 添加页眉
+        header = f"{title} {version}                                                                                                    {page_num}"
+        p = doc.add_paragraph()
+        run = p.add_run(header)
+        run.font.size = Pt(10)
+        
+        # 添加分隔线
+        p = doc.add_paragraph()
+        run = p.add_run("_" * 100)
+        
+        # 添加省略符号
+        for _ in range(20):
+            doc.add_paragraph()
+        
+        p = doc.add_paragraph()
+        run = p.add_run("......")
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        run.font.size = Pt(24)
 
 @dataclass
 class MainParams:
@@ -452,30 +759,59 @@ def main(main_params: MainParams):
     
     print(f"Found {len(files)} code files")
 
-    # 第二步，生成PDF
-    writer = PDFCodeWriter(
-        font_name=font_name,
-        font_size=font_size,
-        max_front_pages=max_front_pages,
-        max_back_pages=max_back_pages
-    )
-    
     # 确定基础目录用于计算相对路径
     base_dir = indirs[0] if len(indirs) == 1 else None
     
-    # 收集所有代码行
-    writer.collect_code_lines(files, comment_chars, base_dir)
+    # 判断输出格式
+    is_docx = outfile.lower().endswith('.docx')
     
-    # 分页
-    front_pages, back_pages = writer.split_lines_for_pages(comment_chars)
+    if is_docx:
+        # 第二步，生成DOCX
+        if not DOCX_AVAILABLE:
+            print("Error: python-docx is not installed. Install it with: pip install python-docx")
+            return 1
+        
+        writer = DOCXCodeWriter(
+            max_front_pages=max_front_pages,
+            max_back_pages=max_back_pages
+        )
+        
+        # 收集所有代码行
+        writer.collect_code_lines(files, comment_chars, base_dir)
+        
+        # 分页
+        front_pages, back_pages = writer.split_lines_for_pages(comment_chars)
+        
+        print(f"Front pages: {len(front_pages)}")
+        print(f"Back pages: {len(back_pages)}")
+        
+        # 创建DOCX
+        writer.create_docx(outfile, title, version, front_pages, back_pages)
+        
+        print(f"DOCX created: {outfile}")
+    else:
+        # 第二步，生成PDF
+        writer = PDFCodeWriter(
+            font_name=font_name,
+            font_size=font_size,
+            max_front_pages=max_front_pages,
+            max_back_pages=max_back_pages
+        )
+        
+        # 收集所有代码行
+        writer.collect_code_lines(files, comment_chars, base_dir)
+        
+        # 分页
+        front_pages, back_pages = writer.split_lines_for_pages(comment_chars)
+        
+        print(f"Front pages: {len(front_pages)}")
+        print(f"Back pages: {len(back_pages)}")
+        
+        # 创建PDF
+        writer.create_pdf(outfile, title, version, front_pages, back_pages)
+        
+        print(f"PDF created: {outfile}")
     
-    print(f"Front pages: {len(front_pages)}")
-    print(f"Back pages: {len(back_pages)}")
-    
-    # 创建PDF
-    writer.create_pdf(outfile, title, version, front_pages, back_pages)
-    
-    print(f"PDF created: {outfile}")
     return 0
 
 def parse_args():
